@@ -479,6 +479,20 @@ def process_single_image_ocr(
         }
         return res_dict, o_kb, c_kb
     except Exception as e:
+      err_str = str(e).lower()
+      if any(kw in err_str for kw in ["401", "unauthenticated", "invalid_argument", "access_token_type_unsupported", "permission_denied", "403"]):
+        task_data["msg"] = f"❌ API Key 金鑰無效 (401 未授權): {e}"
+        save_task_status(task_id, task_data)
+        return {
+            "照片檔名": fname,
+            "專案名稱": "API Key無效",
+            "申請廠商": "請更換金鑰 (401)",
+            "動火位置": "",
+            "動火人員": "",
+            "監火人員": "",
+            "動火日期": "",
+            "作業內容": "",
+        }, o_kb, c_kb
       wait_sec = min(
           12.0, 3.0 + attempt * 2.0 + random.uniform(0.5, 1.5)
       )
@@ -625,6 +639,12 @@ def run_background_ocr_task(
             batch_success = True
             break
       except Exception as e:
+        err_str = str(e).lower()
+        if any(kw in err_str for kw in ["401", "unauthenticated", "invalid_argument", "access_token_type_unsupported", "permission_denied", "403"]):
+          task_data["status"] = "error"
+          task_data["msg"] = f"❌ API Key 金鑰無效或未授權 (401 未授權)！請手動更換正確以 AIzaSy 開頭的金鑰: {e}"
+          save_task_status(task_id, task_data)
+          return
         # 動態增加批次冷卻時間以保護限速
         current_inter_batch_delay = min(15, current_inter_batch_delay + 1)
         wait_sec = min(
@@ -685,20 +705,33 @@ def run_background_ocr_task(
   save_task_status(task_id, task_data)
 
 
+def get_default_api_key() -> str:
+  """自動從 Streamlit Secrets 或環境變數讀取金鑰，支援雲端部署安全與方便性。"""
+  try:
+    if "GEMINI_API_KEY" in st.secrets:
+      return st.secrets["GEMINI_API_KEY"]
+    if "API_KEY" in st.secrets:
+      return st.secrets["API_KEY"]
+  except Exception:
+    pass
+  return os.environ.get("GEMINI_API_KEY", os.environ.get("API_KEY", MY_API_KEY))
+
+
 # ------------------------------------------------------------------
 # 📌 側邊欄配置
 # ------------------------------------------------------------------
 st.sidebar.header("🔑 API 金鑰與連線設定")
+default_key = get_default_api_key()
 api_key_input = st.sidebar.text_input(
     "API Key:",
-    value=MY_API_KEY,
+    value=default_key,
     type="password",
-    help="自動帶入第 25 行寫入的 Key，亦可在這裡手動修改",
+    help="自動帶入 Secrets/環境變數金鑰。亦可手動輸入 AI Studio 金鑰 (以 AIzaSy 開頭)",
 )
 
 model_choice = st.sidebar.selectbox(
     "AI 模型選擇:",
-    ["gemini-3.6-flash"],
+    ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash", "gemini-3.6-flash"],
     index=0,
 )
 
@@ -771,8 +804,17 @@ with tab_upload:
         filenames = []
         for f in uploaded_files:
           save_path = os.path.join(img_folder, f.name)
-          with open(save_path, "wb") as f_out:
-            f_out.write(f.getvalue())
+          file_bytes = f.getvalue()
+          # ✨ 上傳時立即執行超輕量化預壓縮 (解決 Streamlit Cloud 記憶體/CPU 瓶頸)
+          try:
+            comp_bytes, _, _ = compress_and_prep_image_bytes(
+                file_bytes, max_dimension=max_img_dim, quality=80
+            )
+            with open(save_path, "wb") as f_out:
+              f_out.write(comp_bytes)
+          except Exception:
+            with open(save_path, "wb") as f_out:
+              f_out.write(file_bytes)
           filenames.append(f.name)
 
         task_init_data = {
