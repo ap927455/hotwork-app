@@ -737,9 +737,7 @@ tab_upload, tab_history = st.tabs(
 
 with tab_upload:
   uploaded_files = st.file_uploader(
-      "📁 請選擇或拖曳動火單相片 (支援全選 20+ 張照片同時上傳，相容"
-      " HEIC/JPG/PNG):",
-      type=["jpg", "jpeg", "png", "heic", "heif", "webp"],
+      "📁 請選擇或拖曳動火單相片 (支援全選照片，相容 HEIC/JPG/PNG):",
       accept_multiple_files=True,
   )
 
