@@ -642,7 +642,7 @@ def run_background_ocr_task(
         err_str = str(e).lower()
         if any(kw in err_str for kw in ["401", "unauthenticated", "invalid_argument", "access_token_type_unsupported", "permission_denied", "403"]):
           task_data["status"] = "error"
-          task_data["msg"] = f"❌ API Key 金鑰無效或未授權 (401 未授權)！請手動更換正確以 AIzaSy 開頭的金鑰: {e}"
+          task_data["msg"] = f"❌ API Key 金鑰無效或未授權 (401 未授權)！請檢查 API Key 金鑰或權限設定: {e}"
           save_task_status(task_id, task_data)
           return
         # 動態增加批次冷卻時間以保護限速
@@ -726,7 +726,7 @@ api_key_input = st.sidebar.text_input(
     "API Key:",
     value=default_key,
     type="password",
-    help="自動帶入 Secrets/環境變數金鑰。亦可手動輸入 AI Studio 金鑰 (以 AIzaSy 開頭)",
+    help="自動帶入 Secrets/環境變數金鑰。亦可手動輸入 AI Studio 產生的金鑰",
 )
 
 model_choice = st.sidebar.selectbox(
