@@ -23,7 +23,7 @@ pillow_heif.register_heif_opener()
 # ------------------------------------------------------------------
 # 📌 全局設定與目錄建立
 # ------------------------------------------------------------------
-MY_API_KEY = "AQ.Ab8RN6LHT9MYO3FuZPxI--Wht9csiImTnXHUnDaTn4KE3T_Y7Q"
+MY_API_KEY = "AQ.Ab8RN6L0OsxG1irYN3Qs0Xw-GVPyCiB1kIzuhoa1vgIS74mxDw"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 TASKS_DIR = os.path.join(BASE_DIR, "tasks_storage")
 TEMPLATES_DIR = os.path.join(BASE_DIR, "templates")
@@ -731,7 +731,7 @@ api_key_input = st.sidebar.text_input(
 
 model_choice = st.sidebar.selectbox(
     "AI 模型選擇:",
-    ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash", "gemini-3.6-flash"],
+    ["gemini-3.6-flash", "gemini-3.8-flash", "gemini-flash-latest"],
     index=0,
 )
 
