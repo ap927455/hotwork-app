@@ -23,7 +23,7 @@ pillow_heif.register_heif_opener()
 # ------------------------------------------------------------------
 # 📌 全局設定與目錄建立
 # ------------------------------------------------------------------
-MY_API_KEY = "AQ.Ab8RN6L0OsxG1irYN3Qs0Xw-GVPyCiB1kIzuhoa1vgIS74mxDw"
+MY_API_KEY = "AQ.Ab8RN6LmKR0pdFqz-jagUYkq6ep-koHyQaZwef9LFcJm0EDk2A"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 TASKS_DIR = os.path.join(BASE_DIR, "tasks_storage")
 TEMPLATES_DIR = os.path.join(BASE_DIR, "templates")
@@ -187,7 +187,14 @@ def generate_ship_diagram(
   tmpl_path = os.path.join(TEMPLATES_DIR, tmpl_name)
 
   if not os.path.exists(tmpl_path):
-    base_img = Image.new("RGBA", (1024, 576), (255, 255, 255, 255))
+    base_img = Image.new("RGBA", (1024, 576), (245, 247, 250, 255))
+    draw_err = ImageDraw.Draw(base_img)
+    draw_err.rectangle([20, 20, 1004, 556], outline=(220, 53, 69, 255), width=3)
+    draw_err.text(
+        (250, 260),
+        f"⚠️ 找不到船圖底圖檔案: templates/{tmpl_name}\n請確認已將 templates/ 資料夾及其底圖檔案 Push 到 GitHub 儲存庫中！",
+        fill=(220, 53, 69, 255),
+    )
   else:
     base_img = Image.open(tmpl_path).convert("RGBA")
 
@@ -739,7 +746,7 @@ st.sidebar.markdown("---")
 st.sidebar.header("⚙️ 效能與流量優化參數")
 
 batch_size = st.sidebar.slider("📦 批次打包數量 (張/次):", 1, 6, 2)
-inter_batch_delay = st.sidebar.slider("⏱️ 批次間隔冷卻 (秒):", 0, 10, 3)
+inter_batch_delay = st.sidebar.slider("⏱️ 批次間隔冷卻 (秒):", 0, 15, 5)
 max_img_dim = st.sidebar.select_slider(
     "📐 圖片極限解析度 (px):", options=[800, 1024, 1280, 1600], value=1024
 )
