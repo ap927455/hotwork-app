@@ -480,11 +480,11 @@ def process_single_image_ocr(
         return res_dict, o_kb, c_kb
     except Exception as e:
       wait_sec = min(
-          45.0, base_backoff * (1.8**attempt) + random.uniform(1.0, 2.0)
+          12.0, 3.0 + attempt * 2.0 + random.uniform(0.5, 1.5)
       )
       task_data["msg"] = (
-          f"⏳ [單張降級重試] {fname} 觸發 API 限速/網路波動 (第"
-          f" {attempt + 1}/{max_retries} 次)，冷卻等待 {int(wait_sec)} 秒..."
+          f"⏳ [單張重試] {fname} 觸發 API 限速 (第"
+          f" {attempt + 1}/{max_retries} 次)，自動冷卻 {int(wait_sec)} 秒..."
       )
       save_task_status(task_id, task_data)
       time.sleep(wait_sec)
@@ -628,11 +628,11 @@ def run_background_ocr_task(
         # 動態增加批次冷卻時間以保護限速
         current_inter_batch_delay = min(15, current_inter_batch_delay + 1)
         wait_sec = min(
-            50.0, base_backoff * (1.8**attempt) + random.uniform(1.0, 2.0)
+            15.0, 4.0 + attempt * 2.5 + random.uniform(0.5, 1.5)
         )
         task_data["msg"] = (
             f"⏳ 第 {start_idx + 1}~{end_idx} 張照片觸發 API 限速/網路問題"
-            f" (第 {attempt + 1}/{max_retries} 次)，冷卻重試中，等待 {int(wait_sec)} 秒..."
+            f" (第 {attempt + 1}/{max_retries} 次)，自動冷卻 {int(wait_sec)} 秒..."
         )
         save_task_status(task_id, task_data)
         time.sleep(wait_sec)
