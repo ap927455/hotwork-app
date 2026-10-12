@@ -23,7 +23,7 @@ pillow_heif.register_heif_opener()
 # ------------------------------------------------------------------
 # 📌 全局設定與目錄建立
 # ------------------------------------------------------------------
-MY_API_KEY = "AQ.Ab8RN6LmKR0pdFqz-jagUYkq6ep-koHyQaZwef9LFcJm0EDk2A"
+MY_API_KEY = "AQ.Ab8RN6L5H_J1CPtetggT4jigGTbybGW92RJyF2C_xmtdj_UeWg"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 TASKS_DIR = os.path.join(BASE_DIR, "tasks_storage")
 TEMPLATES_DIR = os.path.join(BASE_DIR, "templates")
@@ -173,6 +173,51 @@ def extract_permit_date(records: List[Dict[str, Any]]) -> str:
   return time.strftime("115 年 %m 月 %d 日").replace(" 0", " ")
 
 
+def find_template_path(tmpl_name: str) -> str:
+  """智慧尋找底圖路徑，同時相容根目錄 (GitHub 根目錄)、templates/ 子目錄與大小寫。"""
+  search_dirs = [BASE_DIR, TEMPLATES_DIR]
+  # 1. 優先直接路徑比對
+  for d in search_dirs:
+    for name in [tmpl_name, tmpl_name.lower(), tmpl_name.upper()]:
+      p = os.path.join(d, name)
+      if os.path.exists(p):
+        return p
+  # 2. 關鍵字模糊比對 (419 或 418)
+  kw = "419" if "419" in tmpl_name else "418"
+  for d in search_dirs:
+    if os.path.exists(d):
+      try:
+        for fname in os.listdir(d):
+          if kw in fname and fname.lower().endswith((".png", ".jpg", ".jpeg")):
+            return os.path.join(d, fname)
+      except Exception:
+        pass
+  return ""
+
+
+def get_system_font(size: int = 14) -> ImageFont.FreeTypeFont:
+  """跨平台尋找支援中文字型 (完美相容 Windows 與 Linux/Streamlit Cloud)。"""
+  candidate_paths = [
+      # Windows 微軟正黑體
+      "C:/Windows/Fonts/msjhbd.ttc",
+      "C:/Windows/Fonts/msjh.ttc",
+      "C:/Windows/Fonts/simsun.ttc",
+      # Linux / Streamlit Cloud 開源中文字型
+      "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+      "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+      "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+      "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+      "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+  ]
+  for p in candidate_paths:
+    if os.path.exists(p):
+      try:
+        return ImageFont.truetype(p, size)
+      except Exception:
+        pass
+  return ImageFont.load_default()
+
+
 def generate_ship_diagram(
     records: List[Dict[str, Any]],
     target_project: str = "J418",
@@ -184,15 +229,15 @@ def generate_ship_diagram(
       if "J419" in str(target_project).upper()
       else "J418_template.png"
   )
-  tmpl_path = os.path.join(TEMPLATES_DIR, tmpl_name)
+  tmpl_path = find_template_path(tmpl_name)
 
-  if not os.path.exists(tmpl_path):
+  if not tmpl_path or not os.path.exists(tmpl_path):
     base_img = Image.new("RGBA", (1024, 576), (245, 247, 250, 255))
     draw_err = ImageDraw.Draw(base_img)
     draw_err.rectangle([20, 20, 1004, 556], outline=(220, 53, 69, 255), width=3)
     draw_err.text(
         (250, 260),
-        f"⚠️ 找不到船圖底圖檔案: templates/{tmpl_name}\n請確認已將 templates/ 資料夾及其底圖檔案 Push 到 GitHub 儲存庫中！",
+        f"⚠️ 找不到船圖底圖檔案: {tmpl_name}\n請確認已將 {tmpl_name} 放於根目錄或 templates/ 資料夾中！",
         fill=(220, 53, 69, 255),
     )
   else:
@@ -201,16 +246,8 @@ def generate_ship_diagram(
   overlay = Image.new("RGBA", base_img.size, (255, 255, 255, 0))
   draw = ImageDraw.Draw(overlay)
 
-  font_path = "C:/Windows/Fonts/msjhbd.ttc"
-  if not os.path.exists(font_path):
-    font_path = "C:/Windows/Fonts/msjh.ttc"
-
-  try:
-    font_vendor = ImageFont.truetype(font_path, 12)
-    font_header = ImageFont.truetype(font_path, 18)
-  except Exception:
-    font_vendor = ImageFont.load_default()
-    font_header = ImageFont.load_default()
+  font_vendor = get_system_font(12)
+  font_header = get_system_font(18)
 
   # 填入右上角日期 (先將原本底圖右上角預印日期區域填白覆蓋，再輸出動火日期)
   date_str = custom_date or extract_permit_date(records)
@@ -407,6 +444,13 @@ def normalize_project_name(raw_proj: str) -> str:
   return "J418"
 
 
+def ensure_valid_model(model_name: str) -> str:
+  """自動過濾已被 Google 停用的舊模型 (2.5, 2.0, 1.5)，確保一律使用正常運作的 gemini-3.6-flash。"""
+  if not model_name or any(old in str(model_name) for old in ["2.5", "2.0", "1.5"]):
+    return "gemini-3.6-flash"
+  return str(model_name).strip()
+
+
 # ------------------------------------------------------------------
 # 📌 單張照片備援辨識 (當整批辨識失敗時觸發單張逐一降級重試)
 # ------------------------------------------------------------------
@@ -454,11 +498,12 @@ def process_single_image_ocr(
       temperature=0.1,
   )
 
+  active_model = ensure_valid_model(model_name)
   base_backoff = 3.0
   for attempt in range(max_retries):
     try:
       response = client.models.generate_content(
-          model=model_name, contents=contents, config=config
+          model=active_model, contents=contents, config=config
       )
       if response and response.text:
         clean_text = (
@@ -613,10 +658,11 @@ def run_background_ocr_task(
     base_backoff = 3.0
     batch_success = False
 
+    active_model = ensure_valid_model(model_name)
     for attempt in range(max_retries):
       try:
         response = client.models.generate_content(
-            model=model_name, contents=contents, config=config
+            model=active_model, contents=contents, config=config
         )
         if response and response.text:
           clean_text = (
@@ -735,6 +781,9 @@ api_key_input = st.sidebar.text_input(
     type="password",
     help="自動帶入 Secrets/環境變數金鑰。亦可手動輸入 AI Studio 產生的金鑰",
 )
+clean_key = api_key_input.strip() if api_key_input and api_key_input.strip() else MY_API_KEY
+key_preview = f"{clean_key[:12]}...{clean_key[-6:]}" if len(clean_key) >= 18 else clean_key
+st.sidebar.caption(f"🔍 當前使用金鑰: `{key_preview}`")
 
 model_choice = st.sidebar.selectbox(
     "AI 模型選擇:",
@@ -760,9 +809,10 @@ if st.sidebar.button("🔍 測試 API 金鑰連線"):
   else:
     try:
       client = genai.Client(api_key=api_key_input.strip())
-      res = client.models.generate_content(model=model_choice, contents="Ping")
+      active_model = ensure_valid_model(model_choice)
+      res = client.models.generate_content(model=active_model, contents="Ping")
       if res and res.text:
-        st.sidebar.success("✅ API 連線成功！模型運作正常")
+        st.sidebar.success(f"✅ API 連線成功！模型 ({active_model}) 運作正常")
       else:
         st.sidebar.error("❌ API 無回應")
     except Exception as e:
