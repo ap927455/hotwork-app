@@ -1,4 +1,5 @@
 import base64
+import difflib
 import gc
 import io
 import json
@@ -125,6 +126,78 @@ BLOCK_MAP = {
 
 UNIFIED_VENDOR_COLOR = (220, 53, 69)  # 醒目紅色廠商標籤
 
+# ------------------------------------------------------------------
+# 📌 工令圖號 (DWG NO) 對照船段表 (造船廠標準工令對照)
+# ------------------------------------------------------------------
+DWG_TO_BLOCK_MAP = {
+    "MS01": "B3B",
+    "MS02": "B2B",
+    "MS03": "B1B",
+    "MS04": "B5B",
+    "MS05": "B6B",
+    "MS06": "B8T",
+    "MS07": "F1",
+    "MS08": "B4T, B4B",
+    "MS09": "B3S, B3T, B4S",
+    "MS10": "B3T, B3S",
+    "MS11": "B2T, B2S",
+    "MS12": "B1T, B1S",
+    "MS13": "B5T, B5S",
+    "MS14": "B7T, B6T, B6S, B7S",
+    "MS15": "B8S",
+    "MS16": "PDU",
+    "MS20": "B2M",
+    "MS24": "B8S",
+    "MS25": "PDU",
+    "MS27": "1A1",
+    "MS29": "1A3",
+    "MS32": "2A1",
+    "MS33": "1A3",
+    "MS35": "3A1",
+    "MS38": "3A1",
+    "MS39": "MAST",
+}
+
+# 首要辨識廠商名單 (精準比對目標)
+PRIMARY_VENDORS = [
+    "啟進", "佰億", "良擅", "永一", "日順安",
+    "勛發", "安勝", "放樣課", "偉勝", "堃翊",
+    "興聯泰", "盛泰", "晉航", "廣通"
+]
+
+
+def normalize_dwg_token(tok: str) -> str:
+    """將 MS1、MS01 等圖號格式統一為 MS01 標準格式。"""
+    m = re.match(r"^MS(\d+)$", tok.upper())
+    if m:
+        num = int(m.group(1))
+        return f"MS{num:02d}"
+    return tok.upper()
+
+
+def normalize_location_string(raw_loc: str) -> str:
+    """校正動火位置常見誤判 (如 B15 必為 B1S)，並將 MS01、MS02 等圖號自動對照轉換為標準船段。"""
+    if not raw_loc:
+        return ""
+    s = str(raw_loc).strip()
+
+    # 1. 將 MS 圖號自動對照轉換為船段
+    def repl_dwg(m):
+        raw_code = m.group(1)
+        std_code = normalize_dwg_token(raw_code)
+        if std_code in DWG_TO_BLOCK_MAP:
+            return f"{DWG_TO_BLOCK_MAP[std_code]} ({std_code})"
+        return m.group(0)
+
+    s = re.sub(r"\b(MS\d+)\b", repl_dwg, s, flags=re.IGNORECASE)
+    s = re.sub(r"(?i)DWG\s*(?:NO)?[:\s]*", "", s).strip()
+
+    # 2. 修正 S 誤判為 5 (如 B15 -> B1S, B25 -> B2S, B85 -> B8S)
+    s = re.sub(r"(?i)B([1-8])5", r"B\1S", s)
+    # 3. 修正 B 誤判為 8 (如 81S -> B1S, 85M -> B5M)
+    s = re.sub(r"(?i)\b8([1-8][SMTB])\b", r"B\1", s)
+    return s
+
 
 def normalize_block_key(raw_loc: str) -> str:
     if not raw_loc:
@@ -140,6 +213,13 @@ def normalize_block_key(raw_loc: str) -> str:
         .replace("區", "")
     )
 
+    # 支援若單獨傳入 MS 圖號也能直接對照轉換為船段代碼
+    m_dwg = re.match(r"^MS(\d+)$", s)
+    if m_dwg:
+        std_dwg = f"MS{int(m_dwg.group(1)):02d}"
+        if std_dwg in DWG_TO_BLOCK_MAP:
+            s = DWG_TO_BLOCK_MAP[std_dwg].split(",")[0].strip()
+
     # 手寫辨識常見誤判校正 (如 B15 必為 B1S, 8 開頭必為 B)
     s = re.sub(r"B([1-8])5", r"B\1S", s)
     if s.startswith("8") and len(s) >= 3 and s[1:2].isdigit():
@@ -147,19 +227,24 @@ def normalize_block_key(raw_loc: str) -> str:
     if s.startswith("I") or s.startswith("L"):
         s = "1" + s[1:]
 
+    if not s:
+        return ""
+
     for b in BLOCK_MAP.keys():
         b_clean = b.upper().replace(" ", "").replace("-", "").replace("/", "")
-        if s == b_clean or b_clean in s or s in b_clean:
+        if s == b_clean or b_clean in s:
             return b
     return ""
 
 
 def extract_all_block_keys(raw_loc: str) -> List[str]:
-    """支援解析單一動火位置字串中的多個船段。"""
+    """支援解析單一動火位置字串中的多個船段 (包含 MS 圖號自動對照轉換)。"""
     if not raw_loc:
         return []
+    # 先經由圖號對照與格式校正處理
+    norm_loc = normalize_location_string(raw_loc)
     found_keys = []
-    tokens = re.split(r"[,;、\/\s\+\&\n\|]+", str(raw_loc))
+    tokens = re.split(r"[,;、\/\s\+\&\n\|()]+", str(norm_loc))
     for tok in tokens:
         tok_clean = tok.strip()
         if not tok_clean:
@@ -439,7 +524,7 @@ def normalize_project_name(raw_proj: str) -> str:
 
 
 def clean_vendor_name(raw_vendor: str) -> str:
-    """自動去除『工程行』、『有限公司』、『公司』、『企業社』等後綴，僅保留核心廠商名稱 (如 良擅、安勝、放樣課)。"""
+    """自動去除『工程行』、『有限公司』、『公司』等後綴，並以首要廠商名單為優先對齊目標。"""
     if not raw_vendor:
         return ""
     v = str(raw_vendor).strip()
@@ -455,19 +540,18 @@ def clean_vendor_name(raw_vendor: str) -> str:
         v = v[3:].strip()
     elif v.startswith("廠商"):
         v = v[2:].strip()
+
+    # 1. 完全或包含比對首要廠商名單
+    for pv in PRIMARY_VENDORS:
+        if v == pv or v == pv + "工程" or pv in v:
+            return pv
+
+    # 2. 相似度模糊比對 (防手寫錯別字，如 堃羽 -> 堃翊)
+    matches = difflib.get_close_matches(v, PRIMARY_VENDORS, n=1, cutoff=0.6)
+    if matches:
+        return matches[0]
+
     return v
-
-
-def normalize_location_string(raw_loc: str) -> str:
-    """校正動火位置常見誤判 (如 B15 必為 B1S, 81S 必為 B1S 等)。"""
-    if not raw_loc:
-        return ""
-    s = str(raw_loc).strip()
-    # 修正 S 誤判為 5 (如 B15 -> B1S, B25 -> B2S, B85 -> B8S)
-    s = re.sub(r'(?i)B([1-8])5', r'B\1S', s)
-    # 修正 B 誤判為 8 (如 81S -> B1S, 85M -> B5M)
-    s = re.sub(r'(?i)\b8([1-8][SMTB])\b', r'B\1', s)
-    return s
 
 
 def clean_extinguisher_type(raw_val: str) -> str:
@@ -647,8 +731,33 @@ def run_background_ocr_task(
 請為傳入的每張照片提取資訊，並輸出 JSON 陣列 (每張照片一個物件，嚴格依照傳入照片順序)：
 - "filename": 照片檔名 (請對應傳入檔名)
 - "project": 專案名稱 (造船專案代號，限定為 "J418" 或 "J419")
-- "vendor": 申請廠商名稱 (重要：請去除『工程行』、『有限公司』、『公司』等後綴，只保留核心簡稱，例如：良擅、安勝、放樣課、啟進、日順安、勛發、佰億、永一、廣通、佳勝、強聯、興聯泰 等)
-- "location": 動火位置 (重要：嚴格依造船廠標準船段圖代號校正。S排為 B1S~B8S，絕無 B15 等數字，若寫成 B15 一律為 B1S；M排為 B1M~B8M；T排為 B1T~B8T；B排為 B1B~B6B；上層為 1A1, 1A3, 1A4, 2A1, 2A2, 2A3, 2A4, 3A1, 3A3, 4A1, 4A2, MAST, FN；艏艉有 PDP, PDU, RD, 軸架, SK, FD, F1。若有多個船段請用逗號列出)
+- "vendor": 申請廠商名稱 (重要：請以以下廠商為首要辨識目標：啟進, 佰億, 良擅, 永一, 日順安, 勛發, 安勝, 放樣課, 偉勝, 堃翊, 興聯泰, 盛泰, 晉航, 廣通。若為其他廠商亦可。請務必去除『工程行』、『有限公司』、『公司』等後綴，只保留核心名字)
+- "location": 動火位置 (重要規則：
+  1. 嚴格依造船廠標準船段圖代號校正：S排為 B1S~B8S，絕無 B15 等數字，若寫成 B15 一律校正為 B1S；M排為 B1M~B8M；T排為 B1T~B8T；B排為 B1B~B6B；上層為 1A1, 1A3, 1A4, 2A1, 2A2, 2A3, 2A4, 3A1, 3A3, 4A1, 4A2, MAST, FN；艏艉有 PDP, PDU, RD, 軸架, SK, FD, F1。
+  2. 若手寫的是工令圖號 (如 MS01, MS02...)，請依對照表轉換為標準船段：
+     MS01 -> B3B
+     MS02 -> B2B
+     MS03 -> B1B
+     MS04 -> B5B
+     MS05 -> B6B
+     MS06 -> B8T
+     MS07 -> F1
+     MS08 -> B4T, B4B
+     MS09 -> B3S, B3T, B4S
+     MS10 -> B3T, B3S
+     MS11 -> B2T, B2S
+     MS12 -> B1T, B1S
+     MS13 -> B5T, B5S
+     MS14 -> B7T, B6T, B6S, B7S
+     MS15, MS24 -> B8S
+     MS16, MS25 -> PDU
+     MS20 -> B2M
+     MS27 -> 1A1
+     MS29, MS33 -> 1A3
+     MS32 -> 2A1
+     MS35, MS38 -> 3A1
+     MS39 -> MAST
+  若有多個船段請用逗號列出)
 - "worker": 動火人員 (重要：只需呈現一位姓名。若名單有多位動火人員，請務必挑選其中一位『與監火人員不同姓名』的人員填入。請優先比對常用名單：黃清貴, 吳志成, 蘇荇, 洪進丰, 董光現, 張志仲, 曾龍三, 劉瑀慶, 莊漢源, 吳忠賢, 陳永聰, 林群弼, 朱明志, 林英勝, 王升郁 等)
 - "fire_watcher": 監火人員 (監火員姓名。請優先比對常用名單：黃招勢, 吳天送, 吳文送, M. Ashar Taha, 雷佳樺, 洪鈺軒, 張譽騰, 林彥廷, 陳厚助, 劉彥邦, 陳愛國, Aha, 楊貴同, 鍾經文, 林嘉良, 劉書成 等)
 - "extinguisher": 滅火器類型 (申請單右上方的滅火器類型欄位，通常勾選『乾粉』或『CO2』，若皆無勾選請填『無』)
@@ -656,8 +765,8 @@ def run_background_ocr_task(
 重要辨識規則：
 1. 不用辨識動火日期或作業內容。
 2. 專案名稱若寫 418 請轉為 J418，若寫 419 請轉為 J419。
-3. 廠商名稱不可包含工程行、公司、企業社等詞彙。
-4. 動火位置若出現 B15 等代號必須校正為 B1S。
+3. 廠商名稱不可包含工程行、公司、企業社等詞彙，以首要廠商名單為優先。
+4. 動火位置若為工令圖號 MS01 等請自動對照轉換為船段；若出現 B15 等代號必須校正為 B1S。
 5. 動火人員欄位只能呈現一位姓名，且絕對不要與監火人員同一人。
 6. 僅輸出純 JSON 陣列。"""
 
