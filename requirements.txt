@@ -4,3 +4,4 @@ pandas
 pillow
 pillow-heif
 openpyxl
+python-pptx
