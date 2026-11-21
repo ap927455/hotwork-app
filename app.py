@@ -71,22 +71,28 @@ LEARNED_MEMORY_FILE = os.path.join(TASKS_DIR, "learned_memory.json")
 
 
 def load_learned_memory() -> dict:
+    default_mem = {
+        "custom_vendors": [],
+        "worker_roster": [],
+        "watcher_roster": [],
+        "confusion_hints": [],
+        "corrections_count": 0,
+    }
     if os.path.exists(LEARNED_MEMORY_FILE):
         try:
             with open(LEARNED_MEMORY_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
+                data = json.load(f)
+            if isinstance(data, dict):
+                return {
+                    "custom_vendors": list(data.get("custom_vendors", [])),
+                    "worker_roster": list(data.get("worker_roster", [])),
+                    "watcher_roster": list(data.get("watcher_roster", [])),
+                    "confusion_hints": list(data.get("confusion_hints", [])),
+                    "corrections_count": int(data.get("corrections_count", 0)),
+                }
         except Exception:
             pass
-    return {
-        "custom_vendors": [],
-        "vendor_aliases": {},
-        "worker_roster": [],
-        "worker_aliases": {},
-        "watcher_roster": [],
-        "watcher_aliases": {},
-        "location_aliases": {},
-        "corrections_count": 0,
-    }
+    return default_mem
 
 
 def save_learned_memory(mem: dict):
@@ -270,6 +276,19 @@ PRIMARY_VENDORS = [
     "興聯泰", "盛泰", "晉航", "廣通"
 ]
 
+# 常用動火人員與監火人員基準名單
+PRIMARY_WORKERS = [
+    "黃清貴", "吳志成", "蘇荇", "洪進丰", "董光現",
+    "張志仲", "曾龍三", "劉瑀慶", "莊漢源", "吳忠賢",
+    "陳永聰", "林群弼", "朱明志", "林英勝", "王升郁"
+]
+
+PRIMARY_WATCHERS = [
+    "黃招勢", "吳天送", "吳文送", "M. Ashar Taha", "雷佳樺",
+    "洪鈺軒", "張譽騰", "林彥廷", "陳厚助", "劉彥邦",
+    "陳愛國", "Aha", "楊貴同", "鍾經文", "林嘉良", "劉書成"
+]
+
 
 def normalize_dwg_token(tok: str) -> str:
     """將 MS1、MS01 等圖號格式統一為 MS01 標準格式。"""
@@ -281,15 +300,10 @@ def normalize_dwg_token(tok: str) -> str:
 
 
 def normalize_location_string(raw_loc: str) -> str:
-    """校正動火位置常見誤判 (如 B15 必為 B1S)，並將 MS01、MS02 等圖號自動對照轉換為標準船段 (優先查驗 AI 學習記憶)。"""
+    """校正動火位置常見誤判 (如 B15 必為 B1S)，並將 MS01、MS02 等圖號自動對照轉換為標準船段。"""
     if not raw_loc:
         return ""
     s = str(raw_loc).strip()
-
-    # 0. 優先查驗手動編輯之 AI 學習記憶
-    mem = load_learned_memory()
-    if s in mem.get("location_aliases", {}):
-        s = mem["location_aliases"][s]
 
     # 1. 將 MS 圖號自動對照轉換為船段
     def repl_dwg(m):
@@ -844,16 +858,17 @@ def normalize_project_name(raw_proj: str) -> str:
     return "J418"
 
 
-def clean_vendor_name(raw_vendor: str) -> str:
-    """自動去除『工程行』、『有限公司』、『公司』等後綴，並以首要廠商名單與 AI 學習記憶為優先對齊目標。"""
+def strip_vendor_suffix(raw_vendor: str) -> str:
+    """僅去除『工程行』、『有限公司』、『公司』等後綴與前綴，不做模糊替換，保留使用者輸入之精確廠商名。"""
     if not raw_vendor:
         return ""
     v = str(raw_vendor).strip()
-
-    # 0. 優先查驗手動編輯之 AI 學習記憶別名
-    mem = load_learned_memory()
-    if v in mem.get("vendor_aliases", {}):
-        return mem["vendor_aliases"][v]
+    if v.startswith("廠商:"):
+        v = v[3:].strip()
+    elif v.startswith("廠商："):
+        v = v[3:].strip()
+    elif v.startswith("廠商") and len(v) > 2:
+        v = v[2:].strip()
 
     suffixes = [
         "實業有限公司", "股份有限公司", "工程有限公司", "工程企業社",
@@ -861,24 +876,36 @@ def clean_vendor_name(raw_vendor: str) -> str:
         "行號", "公司", "工作室", "工班"
     ]
     for s in suffixes:
-        if v.endswith(s) and len(v) > len(s):
+        if v.endswith(s) and len(v) - len(s) >= 2:
             v = v[:-len(s)].strip()
-    if v.startswith("廠商:"):
-        v = v[3:].strip()
-    elif v.startswith("廠商"):
-        v = v[2:].strip()
+    return v
 
+
+def clean_vendor_name(raw_vendor: str) -> str:
+    """自動去除『工程行』、『有限公司』、『公司』等後綴，並以首要廠商與已學習新增廠商為優先對齊目標（絕不將合法廠商強制覆寫成其他廠商）。"""
+    if not raw_vendor:
+        return ""
+    v = strip_vendor_suffix(raw_vendor)
+    if not v:
+        return ""
+
+    mem = load_learned_memory()
     # 合併內建首要廠商與使用者自訂已學習廠商
     all_targets = PRIMARY_VENDORS + [
         cv for cv in mem.get("custom_vendors", []) if cv not in PRIMARY_VENDORS
     ]
 
-    # 1. 完全或包含比對首要廠商名單
+    # 1a. 完全比對首要與已學習廠商名單
     for pv in all_targets:
-        if v == pv or v == pv + "工程" or pv in v:
+        if v == pv or v == pv + "工程":
             return pv
 
-    # 2. 相似度模糊比對 (防手寫錯別字，如 堃羽 -> 堃翊)
+    # 1b. 包含比對（長字優先，避免短名稱誤截）
+    for pv in sorted(all_targets, key=len, reverse=True):
+        if pv in v:
+            return pv
+
+    # 2. 相似度模糊比對 (僅防單字手寫錯別字，如 堃羽 -> 堃翊)
     matches = difflib.get_close_matches(v, all_targets, n=1, cutoff=0.6)
     if matches:
         return matches[0]
@@ -920,76 +947,129 @@ WATCHER_ALIASES = {
 
 
 def calibrate_person_name(name: str, aliases: dict, is_watcher: bool = False) -> str:
-    """校正常見手寫混淆姓名 (優先比對 AI 學習記憶與別名表)。"""
+    """校正常見手寫同音錯別字（僅套用內建確知錯字表，絕不將合法人員姓名強制覆寫成其他人）。"""
     if not name:
         return ""
     clean = str(name).strip()
-    clean = aliases.get(clean, clean)
-    mem = load_learned_memory()
-    learned_aliases = mem.get(
-        "watcher_aliases" if is_watcher else "worker_aliases", {}
-    )
-    return learned_aliases.get(clean, clean)
+    return aliases.get(clean, clean)
 
 
-def record_user_corrections(orig_records: list, edited_records: list) -> int:
-    """比對使用者在表格中的手動修改，學習記憶廠商、人員與位置之正確內容。"""
-    if not orig_records or not edited_records:
-        return 0
+def _append_confusion_hint(mem: dict, field: str, misread: str, actual: str):
+    """記錄易混淆字跡提醒（僅供 AI 辨識照片時加強比對筆畫，絕不強制取代合法名稱）。"""
+    misread = str(misread).strip()
+    actual = str(actual).strip()
+    if not misread or not actual or misread == actual:
+        return
+    hints = mem.setdefault("confusion_hints", [])
+    # 去重：若已有相同 (field, misread, actual) 則移至最新
+    hints = [
+        h for h in hints
+        if not (
+            h.get("field") == field
+            and h.get("misread") == misread
+            and h.get("actual") == actual
+        )
+    ]
+    hints.append({"field": field, "misread": misread, "actual": actual})
+    # 最多保留最新 30 筆，維持 Prompt 精簡高速
+    mem["confusion_hints"] = hints[-30:]
+
+
+def record_cell_corrections(cell_diffs: List[Tuple[str, str, str]]) -> dict:
+    """
+    依據使用者剛修改/新增的儲存格差異 (field, old_val, new_val) 進行安全 AI 學習：
+    1. 若出現新廠商、新動火人員、新監火人員，立即加入優先辨識名單，讓未來照片辨識更準確。
+    2. 若為手寫誤判校正，僅記錄為「易混淆字跡提醒」供 Gemini 辨識照片時仔細核對筆畫，
+       絕不建立強制別名覆蓋規則（避免把『日順安』通通誤改成『啟進』）。
+    """
+    summary = {
+        "changed": 0,
+        "added_vendors": [],
+        "added_workers": [],
+        "added_watchers": [],
+    }
+    if not cell_diffs:
+        return summary
+
     mem = load_learned_memory()
     changed = 0
 
-    for i in range(min(len(orig_records), len(edited_records))):
-        orig = orig_records[i]
-        ed = edited_records[i]
+    for field, old_raw, new_raw in cell_diffs:
+        old_s = str(old_raw).strip() if old_raw is not None else ""
+        new_s = str(new_raw).strip() if new_raw is not None else ""
+        if not new_s or new_s == old_s:
+            continue
 
-        # 1. 廠商學習
-        v_orig = str(orig.get("申請廠商", "")).strip()
-        v_new = str(ed.get("申請廠商", "")).strip()
-        if v_new and v_new != v_orig:
-            v_cleaned = clean_vendor_name(v_new)
+        if field == "申請廠商":
+            v_clean = strip_vendor_suffix(new_s)
+            if v_clean:
+                if (
+                    v_clean not in PRIMARY_VENDORS
+                    and v_clean not in mem["custom_vendors"]
+                ):
+                    mem["custom_vendors"].append(v_clean)
+                    summary["added_vendors"].append(v_clean)
+                if old_s and strip_vendor_suffix(old_s) != v_clean:
+                    _append_confusion_hint(mem, "申請廠商", old_s, v_clean)
+                changed += 1
+
+        elif field == "動火人員":
             if (
-                v_cleaned not in PRIMARY_VENDORS
-                and v_cleaned not in mem["custom_vendors"]
+                new_s not in PRIMARY_WORKERS
+                and new_s not in mem["worker_roster"]
             ):
-                mem["custom_vendors"].append(v_cleaned)
-            if v_orig and v_orig != v_cleaned:
-                mem["vendor_aliases"][v_orig] = v_cleaned
+                mem["worker_roster"].append(new_s)
+                summary["added_workers"].append(new_s)
+            if old_s:
+                _append_confusion_hint(mem, "動火人員", old_s, new_s)
             changed += 1
 
-        # 2. 動火人員學習
-        w_orig = str(orig.get("動火人員", "")).strip()
-        w_new = str(ed.get("動火人員", "")).strip()
-        if w_new and w_new != w_orig:
-            if w_new not in mem["worker_roster"]:
-                mem["worker_roster"].append(w_new)
-            if w_orig:
-                mem["worker_aliases"][w_orig] = w_new
+        elif field == "監火人員":
+            if (
+                new_s not in PRIMARY_WATCHERS
+                and new_s not in mem["watcher_roster"]
+            ):
+                mem["watcher_roster"].append(new_s)
+                summary["added_watchers"].append(new_s)
+            if old_s:
+                _append_confusion_hint(mem, "監火人員", old_s, new_s)
             changed += 1
 
-        # 3. 監火人員學習
-        fw_orig = str(orig.get("監火人員", "")).strip()
-        fw_new = str(ed.get("監火人員", "")).strip()
-        if fw_new and fw_new != fw_orig:
-            if fw_new not in mem["watcher_roster"]:
-                mem["watcher_roster"].append(fw_new)
-            if fw_orig:
-                mem["watcher_aliases"][fw_orig] = fw_new
-            changed += 1
-
-        # 4. 動火位置學習
-        loc_orig = str(orig.get("動火位置", "")).strip()
-        loc_new = str(ed.get("動火位置", "")).strip()
-        if loc_new and loc_new != loc_orig:
-            if loc_orig:
-                mem["location_aliases"][loc_orig] = loc_new
+        elif field == "動火位置":
+            if old_s:
+                _append_confusion_hint(mem, "動火位置", old_s, new_s)
             changed += 1
 
     if changed > 0:
         mem["corrections_count"] = mem.get("corrections_count", 0) + changed
         save_learned_memory(mem)
+        summary["changed"] = changed
 
-    return changed
+    return summary
+
+
+def record_user_corrections(orig_records: list, edited_records: list) -> int:
+    """比對兩份紀錄清單差異並寫入安全 AI 學習記憶（相容舊介面）。"""
+    if not edited_records:
+        return 0
+    cell_diffs: List[Tuple[str, str, str]] = []
+    tracked_fields = ("申請廠商", "動火人員", "監火人員", "動火位置")
+    common_len = min(len(orig_records or []), len(edited_records))
+    for i in range(common_len):
+        orig = orig_records[i]
+        ed = edited_records[i]
+        for f in tracked_fields:
+            v_orig = str(orig.get(f, "")).strip()
+            v_new = str(ed.get(f, "")).strip()
+            if v_new and v_new != v_orig:
+                cell_diffs.append((f, v_orig, v_new))
+    for i in range(common_len, len(edited_records)):
+        ed = edited_records[i]
+        for f in tracked_fields:
+            v_new = str(ed.get(f, "")).strip()
+            if v_new:
+                cell_diffs.append((f, "", v_new))
+    return record_cell_corrections(cell_diffs)["changed"]
 
 
 
@@ -1132,16 +1212,34 @@ def run_background_ocr_task(
         cv for cv in mem.get("custom_vendors", []) if cv not in PRIMARY_VENDORS
     ]
     vendors_prompt_str = ", ".join(all_priority_vendors)
-    workers_learned_str = (
-        ", " + ", ".join(mem.get("worker_roster", []))
-        if mem.get("worker_roster")
-        else ""
-    )
-    watchers_learned_str = (
-        ", " + ", ".join(mem.get("watcher_roster", []))
-        if mem.get("watcher_roster")
-        else ""
-    )
+
+    all_priority_workers = PRIMARY_WORKERS + [
+        w for w in mem.get("worker_roster", []) if w not in PRIMARY_WORKERS
+    ]
+    workers_prompt_str = ", ".join(all_priority_workers)
+
+    all_priority_watchers = PRIMARY_WATCHERS + [
+        fw for fw in mem.get("watcher_roster", []) if fw not in PRIMARY_WATCHERS
+    ]
+    watchers_prompt_str = ", ".join(all_priority_watchers)
+
+    hints_block = ""
+    confusion_hints = mem.get("confusion_hints", [])
+    if confusion_hints:
+        hint_lines = []
+        for h in confusion_hints[-20:]:
+            f_type = h.get("field", "")
+            misread = h.get("misread", "")
+            actual = h.get("actual", "")
+            if f_type and misread and actual:
+                hint_lines.append(
+                    f"  - 【{f_type}】手寫字跡曾將「{actual}」誤判為「{misread}」；兩者皆可能出現，請仔細放大核對照片實際筆畫區分，切勿直接套用替換。"
+                )
+        if hint_lines:
+            hints_block = (
+                "\n\n過去人工校對之易混淆字跡提醒（僅供辨識照片時提高警覺、仔細核對筆畫，仍須以照片實際內容為準，絕不可強行把甲改成乙）：\n"
+                + "\n".join(hint_lines)
+            )
 
     prompt = f"""你是造船廠安全管理專家。請辨識傳入的照片中『動火工作安全許可申請表』的手寫文字。
 請為傳入的每張照片提取資訊，並輸出 JSON 陣列 (每張照片一個物件，嚴格依照傳入照片順序)：
@@ -1174,8 +1272,8 @@ def run_background_ocr_task(
      MS35, MS38 -> 3A1
      MS39 -> MAST
   若有多個船段請用逗號列出)
-- "worker": 動火人員 (重要：只需呈現一位姓名。若名單有多位動火人員，請務必挑選其中一位『與監火人員不同姓名』的人員填入。請優先比對常用名單：黃清貴, 吳志成, 蘇荇, 洪進丰, 董光現, 張志仲, 曾龍三, 劉瑀慶, 莊漢源, 吳忠賢, 陳永聰, 林群弼, 朱明志, 林英勝, 王升郁{workers_learned_str} 等)
-- "fire_watcher": 監火人員 (監火員姓名。請優先比對常用名單：黃招勢, 吳天送, 吳文送, M. Ashar Taha, 雷佳樺, 洪鈺軒, 張譽騰, 林彥廷, 陳厚助, 劉彥邦, 陳愛國, Aha, 楊貴同, 鍾經文, 林嘉良, 劉書成{watchers_learned_str} 等)
+- "worker": 動火人員 (重要：只需呈現一位姓名。若名單有多位動火人員，請務必挑選其中一位『與監火人員不同姓名』的人員填入。請優先比對常用名單：{workers_prompt_str} 等)
+- "fire_watcher": 監火人員 (監火員姓名。請優先比對常用名單：{watchers_prompt_str} 等)
 - "extinguisher": 滅火器類型 (申請單右上方的滅火器類型欄位，通常勾選『乾粉』或『CO2』，若皆無勾選請填『無』)
 
 重要辨識規則：
@@ -1184,7 +1282,7 @@ def run_background_ocr_task(
 3. 廠商名稱不可包含工程行、公司、企業社等詞彙，以首要廠商名單為優先。
 4. 動火位置若為工令圖號 MS01 等請自動對照轉換為船段；若出現 B15 等代號必須校正為 B1S。
 5. 動火人員欄位只能呈現一位姓名，且絕對不要與監火人員同一人。
-6. 僅輸出純 JSON 陣列。"""
+6. 僅輸出純 JSON 陣列。{hints_block}"""
 
     config = types.GenerateContentConfig(
         response_mime_type="application/json",
@@ -1413,34 +1511,219 @@ if st.sidebar.button("🔍 測試 API 金鑰連線"):
             st.sidebar.error(f"❌ 連線失敗: {e}")
 
 # ------------------------------------------------------------------
-# 📌 AI 自動學習記憶狀態面板
+# 📌 表格編輯即時回呼 (於頁面重繪前先執行，確保第一次修改即刻記憶並同步側邊欄)
 # ------------------------------------------------------------------
+TABLE_COLUMNS = [
+    "照片檔名",
+    "專案名稱",
+    "申請廠商",
+    "動火位置",
+    "動火人員",
+    "監火人員",
+    "滅火器類型",
+]
+
+
+def _clean_cell_val(val: Any) -> str:
+    if val is None or (isinstance(val, float) and math.isnan(val)):
+        return ""
+    return str(val)
+
+
+def normalize_table_records(records: list, cols: List[str]) -> List[Dict[str, str]]:
+    """將紀錄清單標準化為一致的字串欄位字典，避免 NaN / None 導致比對異常。"""
+    out = []
+    for r in records or []:
+        if isinstance(r, dict):
+            out.append({c: _clean_cell_val(r.get(c, "")) for c in cols})
+    return out
+
+
+def _normalize_delta(delta: dict) -> dict:
+    """深拷貝並標準化 st.data_editor 的 delta 結構（確保列索引為 int）。"""
+    edited_rows = {}
+    for k, v in (delta.get("edited_rows", {}) or {}).items():
+        try:
+            idx = int(k)
+        except (ValueError, TypeError):
+            continue
+        if isinstance(v, dict):
+            edited_rows[idx] = {col: _clean_cell_val(val) for col, val in v.items()}
+
+    added_rows = []
+    for row in delta.get("added_rows", []) or []:
+        if isinstance(row, dict):
+            added_rows.append({col: _clean_cell_val(val) for col, val in row.items()})
+
+    deleted_rows = []
+    for idx_raw in delta.get("deleted_rows", []) or []:
+        try:
+            deleted_rows.append(int(idx_raw))
+        except (ValueError, TypeError):
+            pass
+
+    return {
+        "edited_rows": edited_rows,
+        "added_rows": added_rows,
+        "deleted_rows": deleted_rows,
+    }
+
+
+def apply_editor_delta(
+    base_records: List[Dict[str, str]], delta: dict, cols: List[str]
+) -> List[Dict[str, str]]:
+    """依據 st.data_editor 的累積 delta (edited/deleted/added) 還原最新表格資料。"""
+    norm_delta = _normalize_delta(delta or {})
+    working = [dict(r) for r in base_records]
+
+    for idx, changes in norm_delta["edited_rows"].items():
+        if 0 <= idx < len(working):
+            for col, val in changes.items():
+                if col in cols:
+                    working[idx][col] = val
+
+    deleted_set = set(norm_delta["deleted_rows"])
+    if deleted_set:
+        working = [r for i, r in enumerate(working) if i not in deleted_set]
+
+    for new_row in norm_delta["added_rows"]:
+        row_clean = {col: "" for col in cols}
+        for col, val in new_row.items():
+            if col in row_clean:
+                row_clean[col] = val
+        working.append(row_clean)
+
+    return working
+
+
+def extract_delta_cell_diffs(
+    base_records: List[Dict[str, str]],
+    prev_delta: dict,
+    curr_delta: dict,
+) -> List[Tuple[str, str, str]]:
+    """精準比對本次編輯與前一次 delta 的單一儲存格差異，不受刪除列位偏移影響。"""
+    p = _normalize_delta(prev_delta or {})
+    c = _normalize_delta(curr_delta or {})
+    diffs: List[Tuple[str, str, str]] = []
+    tracked_fields = ("申請廠商", "動火人員", "監火人員", "動火位置")
+
+    # 1. 既有列的儲存格修改
+    all_row_indices = set(p["edited_rows"].keys()) | set(c["edited_rows"].keys())
+    for idx in sorted(all_row_indices):
+        if idx < 0 or idx >= len(base_records):
+            continue
+        p_row = p["edited_rows"].get(idx, {})
+        c_row = c["edited_rows"].get(idx, {})
+        for col in tracked_fields:
+            base_val = base_records[idx].get(col, "")
+            old_val = p_row.get(col, base_val)
+            new_val = c_row.get(col, base_val)
+            if new_val != old_val:
+                diffs.append((col, old_val, new_val))
+
+    # 2. 使用者手動新增列中的填寫內容
+    for add_idx, c_add in enumerate(c["added_rows"]):
+        p_add = p["added_rows"][add_idx] if add_idx < len(p["added_rows"]) else {}
+        for col in tracked_fields:
+            old_val = p_add.get(col, "")
+            new_val = c_add.get(col, "")
+            if new_val and new_val != old_val:
+                diffs.append((col, old_val, new_val))
+
+    return diffs
+
+
+def handle_table_edit(task_id: str, editor_key: str, cols: List[str]):
+    """st.data_editor 的 on_change 回呼：在腳本重跑最開頭即完成寫入與學習，第一次修改就立即生效！"""
+    base_key = f"editor_base_{task_id}"
+    saved_key = f"editor_saved_{task_id}"
+    prev_delta_key = f"editor_prev_delta_{task_id}"
+
+    if base_key not in st.session_state or editor_key not in st.session_state:
+        return
+
+    base_records = st.session_state[base_key]
+    prev_delta = st.session_state.get(
+        prev_delta_key, {"edited_rows": {}, "added_rows": [], "deleted_rows": []}
+    )
+    curr_delta = st.session_state[editor_key]
+
+    new_records = apply_editor_delta(base_records, curr_delta, cols)
+    cell_diffs = extract_delta_cell_diffs(base_records, prev_delta, curr_delta)
+
+    # 立即將修改後的表格結果存回任務檔
+    curr_task = load_task_status(task_id)
+    if curr_task:
+        curr_task["results"] = new_records
+        save_task_status(task_id, curr_task)
+
+    st.session_state[saved_key] = [dict(r) for r in new_records]
+    st.session_state[prev_delta_key] = _normalize_delta(curr_delta)
+
+    # 立即執行安全 AI 學習並記錄待顯示之通知
+    if cell_diffs:
+        learn_summary = record_cell_corrections(cell_diffs)
+        if learn_summary["changed"] > 0:
+            st.session_state["_pending_learn_toast"] = learn_summary
+
+
+# ------------------------------------------------------------------
+# 📌 AI 自動學習記憶狀態面板 (因 on_change 已先執行，第一次修改即會立即更新)
+# ------------------------------------------------------------------
+pending_toast = st.session_state.pop("_pending_learn_toast", None)
+if pending_toast:
+    toast_parts = []
+    if pending_toast.get("added_vendors"):
+        toast_parts.append(
+            f"新增廠商「{'、'.join(pending_toast['added_vendors'])}」"
+        )
+    if pending_toast.get("added_workers"):
+        toast_parts.append(
+            f"新增動火員「{'、'.join(pending_toast['added_workers'])}」"
+        )
+    if pending_toast.get("added_watchers"):
+        toast_parts.append(
+            f"新增監火員「{'、'.join(pending_toast['added_watchers'])}」"
+        )
+    detail_str = f"（{'；'.join(toast_parts)}）" if toast_parts else ""
+    st.toast(
+        f"🧠 AI 已即時學習您修正的 {pending_toast['changed']} 筆校對資料{detail_str}！",
+        icon="💡",
+    )
+
 st.sidebar.markdown("---")
 st.sidebar.header("🧠 AI 自動學習記憶庫")
 current_mem = load_learned_memory()
 cust_v_cnt = len(current_mem.get("custom_vendors", []))
 w_cnt = len(current_mem.get("worker_roster", []))
 fw_cnt = len(current_mem.get("watcher_roster", []))
+hints_list = current_mem.get("confusion_hints", [])
+hints_cnt = len(hints_list)
 corr_cnt = current_mem.get("corrections_count", 0)
 
 st.sidebar.markdown(
-    f"- 📝 已學習校正次數: **{corr_cnt}** 次\n"
-    f"- 🏢 已學習自訂廠商: **{cust_v_cnt}** 家\n"
-    f"- 👷 已學習動火人員: **{w_cnt}** 人\n"
-    f"- 🧯 已學習監火人員: **{fw_cnt}** 人"
+    f"- 📝 累計學習校對次數: **{corr_cnt}** 次\n"
+    f"- 🏢 已記憶新增廠商: **{cust_v_cnt}** 家\n"
+    f"- 👷 已記憶新增動火員: **{w_cnt}** 人\n"
+    f"- 🧯 已記憶新增監火員: **{fw_cnt}** 人\n"
+    f"- 💡 易混淆字跡提醒: **{hints_cnt}** 筆"
 )
 
 with st.sidebar.expander("🔍 檢視/管理 AI 記憶細項"):
     if cust_v_cnt > 0:
-        st.write("🏢 **自訂廠商**:", ", ".join(current_mem["custom_vendors"]))
-    if current_mem.get("vendor_aliases"):
-        st.write("🔄 **廠商校正別名**:", current_mem["vendor_aliases"])
+        st.write("🏢 **新增優先廠商**:", "、".join(current_mem["custom_vendors"]))
     if w_cnt > 0:
-        st.write("👷 **常用動火名單**:", ", ".join(current_mem["worker_roster"]))
+        st.write("👷 **新增動火名單**:", "、".join(current_mem["worker_roster"]))
     if fw_cnt > 0:
-        st.write("🧯 **常用監火名單**:", ", ".join(current_mem["watcher_roster"]))
-    if current_mem.get("location_aliases"):
-        st.write("📍 **位置校正對照**:", current_mem["location_aliases"])
+        st.write("🧯 **新增監火名單**:", "、".join(current_mem["watcher_roster"]))
+    if hints_cnt > 0:
+        st.write("💡 **AI 易混淆字跡提醒** *(僅供辨識加強核對，絕不強制覆寫)*:")
+        for h in hints_list[-10:]:
+            st.caption(
+                f"• [{h.get('field', '')}] 曾將「{h.get('actual', '')}」誤判為「{h.get('misread', '')}」"
+            )
+    if cust_v_cnt == 0 and w_cnt == 0 and fw_cnt == 0 and hints_cnt == 0:
+        st.caption("目前尚無學習紀錄。雙擊修改下方表格儲存格後將立即自動學習。")
 
     if st.button("🗑️ 清空所有 AI 學習記憶", use_container_width=True):
         reset_learned_memory()
@@ -1656,6 +1939,14 @@ with tab_history:
                     delete_task(selected_task_id)
                     if st.session_state.get("active_task_id") == selected_task_id:
                         st.session_state.pop("active_task_id", None)
+                    for k_prefix in (
+                        "editor_base_",
+                        "editor_saved_",
+                        "editor_prev_delta_",
+                        "editor_status_",
+                        "editor_ver_",
+                    ):
+                        st.session_state.pop(f"{k_prefix}{selected_task_id}", None)
                     st.success(f"🗑️ 已成功刪除任務 `{selected_task_id}`！")
                     time.sleep(0.5)
                     st.rerun()
@@ -1710,43 +2001,60 @@ with tab_history:
         if results:
             st.write("---")
             st.write(
-                "### 📊 今日動火作業彙整表 (雙擊儲存格即可修改校對，下方船段圖會即時同步更新)："
+                "### 📊 今日動火作業彙整表 (雙擊儲存格即可修改校對，第一次修改即會立即記憶並同步船段圖)："
             )
 
-            columns_order = [
-                "照片檔名",
-                "專案名稱",
-                "申請廠商",
-                "動火位置",
-                "動火人員",
-                "監火人員",
-                "滅火器類型",
-            ]
-            df = pd.DataFrame(results)
-            existing_cols = [c for c in columns_order if c in df.columns]
-            df = df[existing_cols]
+            base_key = f"editor_base_{selected_task_id}"
+            saved_key = f"editor_saved_{selected_task_id}"
+            prev_delta_key = f"editor_prev_delta_{selected_task_id}"
+            status_key = f"editor_status_{selected_task_id}"
+            ver_key = f"editor_ver_{selected_task_id}"
+
+            # 僅於首次載入該任務、切換不同任務、或任務剛從處理中轉為完成時初始化基準表格，
+            # 確保使用者在同一任務編輯過程中傳入 st.data_editor 的基底 DataFrame 永遠穩定不重置，
+            # 且切換任務再切回時會載入已存檔之最新修改內容。
+            switched_task = (
+                st.session_state.get("_last_rendered_editor_task_id")
+                != selected_task_id
+            )
+            need_init = (
+                switched_task
+                or base_key not in st.session_state
+                or st.session_state.get(status_key) != status_str
+                or (len(results) > 0 and len(st.session_state.get(base_key, [])) == 0)
+            )
+            if need_init:
+                norm_results = normalize_table_records(results, TABLE_COLUMNS)
+                st.session_state[base_key] = [dict(r) for r in norm_results]
+                st.session_state[saved_key] = [dict(r) for r in norm_results]
+                st.session_state[prev_delta_key] = {
+                    "edited_rows": {},
+                    "added_rows": [],
+                    "deleted_rows": [],
+                }
+                st.session_state[status_key] = status_str
+                st.session_state[ver_key] = st.session_state.get(ver_key, 0) + 1
+                st.session_state["_last_rendered_editor_task_id"] = selected_task_id
+
+            editor_key = (
+                f"editor_{selected_task_id}_v{st.session_state.get(ver_key, 1)}"
+            )
+            base_df = pd.DataFrame(
+                st.session_state[base_key], columns=TABLE_COLUMNS
+            )
 
             edited_df = st.data_editor(
-                df,
+                base_df,
                 num_rows="dynamic",
                 use_container_width=True,
-                key=f"editor_{selected_task_id}",
+                key=editor_key,
+                on_change=handle_table_edit,
+                args=(selected_task_id, editor_key, TABLE_COLUMNS),
             )
 
-            records_list = edited_df.to_dict(orient="records")
-
-            # ------------------------------------------------------------------
-            # 📌 AI 自動學習核心連動：即時比對手動編輯並儲存記憶
-            # ------------------------------------------------------------------
-            if records_list != results:
-                learned_changes = record_user_corrections(results, records_list)
-                curr_task["results"] = records_list
-                save_task_status(selected_task_id, curr_task)
-                if learned_changes > 0:
-                    st.toast(
-                        f"🧠 AI 已自動學習並記憶您所修正的 {learned_changes} 筆資料！",
-                        icon="💡",
-                    )
+            records_list = normalize_table_records(
+                edited_df.to_dict(orient="records"), TABLE_COLUMNS
+            )
 
             # ------------------------------------------------------------------
             # 📌 自動生成動火管制船段圖 (即時響應同步)
