@@ -1,0 +1,12 @@
+# Sensitive secrets and environment files (NEVER commit these!)
+.streamlit/secrets.toml
+.env
+.env.*
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Local runtime storage
+tasks_storage/

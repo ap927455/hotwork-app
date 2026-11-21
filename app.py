@@ -1,4 +1,3 @@
-import base64
 import difflib
 import gc
 import io
@@ -33,12 +32,8 @@ except ImportError:
 pillow_heif.register_heif_opener()
 
 # ------------------------------------------------------------------
-# 📌 全局設定與目錄建立 (包含防 Google 掃描之安全金鑰處理)
+# 📌 全局設定與目錄建立
 # ------------------------------------------------------------------
-# 為防止 Google Cloud / GitHub 自動資安掃描在公開儲存庫誤刪金鑰，此處進行安全 Base64 編碼保護
-_DEFAULT_KEY_B64 = "QVEuQWI4Uk42Sno4dkt1MUo3dGIzc1hxZDNJN2FyMG1BcE5Bc2VVSjBpMmRkUEt4QzdhVkE="
-MY_API_KEY = base64.b64decode(_DEFAULT_KEY_B64).decode("utf-8")
-
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 TASKS_DIR = os.path.join(BASE_DIR, "tasks_storage")
 TEMPLATES_DIR = os.path.join(BASE_DIR, "templates")
@@ -1339,15 +1334,15 @@ def run_background_ocr_task(
 
 
 def get_default_api_key() -> str:
-    """自動從 Streamlit Secrets 或環境變數讀取金鑰，提供最高安全性與便利性。"""
+    """自動從 Streamlit Secrets 或環境變數讀取金鑰，不將金鑰寫死於程式碼中。"""
     try:
         if "GEMINI_API_KEY" in st.secrets:
-            return st.secrets["GEMINI_API_KEY"]
+            return str(st.secrets["GEMINI_API_KEY"]).strip()
         if "API_KEY" in st.secrets:
-            return st.secrets["API_KEY"]
+            return str(st.secrets["API_KEY"]).strip()
     except Exception:
         pass
-    return os.environ.get("GEMINI_API_KEY", os.environ.get("API_KEY", MY_API_KEY))
+    return os.environ.get("GEMINI_API_KEY", os.environ.get("API_KEY", "")).strip()
 
 
 # ------------------------------------------------------------------
@@ -1359,15 +1354,15 @@ api_key_input = st.sidebar.text_input(
     "API Key:",
     value=default_key,
     type="password",
-    help="系統預設已填入您的專屬金鑰。您亦可隨時手動更換或於 Streamlit Secrets 中設定 GEMINI_API_KEY",
+    placeholder="請輸入 Gemini API Key",
+    help="建議於 Streamlit Cloud Secrets 或環境變數設定 GEMINI_API_KEY，亦可在此手動輸入。",
 )
-clean_key = (
-    api_key_input.strip() if api_key_input and api_key_input.strip() else MY_API_KEY
-)
-key_preview = (
-    f"{clean_key[:12]}...{clean_key[-6:]}" if len(clean_key) >= 18 else clean_key
-)
-st.sidebar.caption(f"🔍 當前使用金鑰: `{key_preview}`")
+clean_key = api_key_input.strip() if api_key_input else ""
+if clean_key:
+    key_suffix = clean_key[-4:] if len(clean_key) >= 4 else "****"
+    st.sidebar.caption(f"✅ 已載入 API 金鑰 (尾碼 `...{key_suffix}`)")
+else:
+    st.sidebar.warning("⚠️ 尚未設定 API Key，請於上方輸入或在 Streamlit Secrets 設定 `GEMINI_API_KEY`。")
 
 model_choice = st.sidebar.selectbox(
     "AI 模型選擇 (高配額極速清單):",
